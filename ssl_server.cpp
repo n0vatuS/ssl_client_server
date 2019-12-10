@@ -134,8 +134,7 @@ void echo(SSL* ssl) {
             close(sd);          /* close connection */
 			break;
 		}
-
-		snprintf(buf+received, 14, "  [Client %d]\0", sd);
+		snprintf(buf+strlen(buf), 14, "  [Client %d]\0", sd);
 		printf("%s\n", buf);
 		
 		if(bflag) {
@@ -143,8 +142,9 @@ void echo(SSL* ssl) {
 				ssize_t sent = SSL_write(*it, buf, strlen(buf));
 				if (sent == 0) {
 					printf("send failed to %d\n", sd);
-					Clients.erase(ssl);
+					Clients.erase(*it);
                     close(sd);          /* close connection */
+                    break;
 				}
 			}
 		}
@@ -163,7 +163,7 @@ void echo(SSL* ssl) {
 bool Servlet(SSL* ssl) /* Serve the connection -- threadable */
 {
     char buf[1024] = {0};
-    int sd, bytes;
+    int bytes;
     bool ret = false;
     const char* ServerResponse="<Body><Name>aticleworld.com</Name><year>1.5</year><BlogType>Embedede and c/c++</BlogType><Author>amlendra<Author></Body>";
     const char *cpValidMessage = "<Body><UserName>a<UserName><Password>b<Password><Body>";
@@ -207,6 +207,7 @@ int main(int argc, char *argv[])
 		usage();
 		exit(1);
 	}
+	if(argc == 3) bflag = true;
 
     SSL_CTX *ctx;
     int server;
@@ -241,7 +242,6 @@ int main(int argc, char *argv[])
 
         if(certificate) {
             Clients.insert(ssl);
-            // echo(ssl, client);
             T.push_back(thread(echo, ssl));
         }
     }
