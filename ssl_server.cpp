@@ -11,6 +11,8 @@
 #include <thread>
 #include <vector>
 #include <string>
+#include <mutex>
+
 #include "openssl/ssl.h"
 #include "openssl/err.h"
 #define FAIL    -1
@@ -21,6 +23,7 @@ const static int BUFSIZE = 1024;
 
 set<SSL *> Clients;
 bool bflag;
+mutex m;
 
 // Create the SSL socket and intialize the socket address structure
 int OpenListener(int port)
@@ -130,7 +133,9 @@ void echo(SSL* ssl) {
 		int received = SSL_read(ssl, buf, sizeof(buf));
 		if (received == 0 || received == -1) {
 			printf("recv failed to %d\n", sd);
+            m.lock();
 			Clients.erase(ssl);
+            m.unlock();
             close(sd);          /* close connection */
 			break;
 		}
@@ -142,7 +147,9 @@ void echo(SSL* ssl) {
 				ssize_t sent = SSL_write(*it, buf, strlen(buf));
 				if (sent == 0) {
 					printf("send failed to %d\n", sd);
+                    m.lock();
 					Clients.erase(*it);
+                    m.unlock();
                     close(sd);          /* close connection */
                     break;
 				}
@@ -152,7 +159,9 @@ void echo(SSL* ssl) {
 			ssize_t sent = SSL_write(ssl, buf, strlen(buf));
 			if (sent == 0) {
 				printf("send failed to %d\n", sd);
+                m.lock();
 				Clients.erase(ssl);
+                m.unlock();
                 close(sd);          /* close connection */
 				break;
 			}
@@ -241,7 +250,9 @@ int main(int argc, char *argv[])
         bool certificate = Servlet(ssl);         /* service connection */
 
         if(certificate) {
+            m.lock();
             Clients.insert(ssl);
+            m.unlock();
             T.push_back(thread(echo, ssl));
         }
     }

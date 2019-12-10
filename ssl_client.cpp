@@ -131,7 +131,7 @@ int main(int argc, char *argv[])
 	    bytes = SSL_read(ssl, buf, sizeof(buf)); /* get reply & decrypt */
 	    buf[bytes] = 0;
 	    printf("Received: \"%s\"\n", buf);
-
+		if(!memcmp(buf, "Invalid", 7)) exit(1);
 		thread T(recv_msg, ssl);
 
 		while (true) {
