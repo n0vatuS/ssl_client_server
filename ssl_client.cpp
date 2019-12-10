@@ -8,7 +8,12 @@
 #include <netdb.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include <thread>
 #define FAIL    -1
+
+using namespace std;
+
+const static int BUFSIZE = 1024;
 
 int OpenConnection(const char *hostname, int port)
 {
@@ -35,7 +40,7 @@ int OpenConnection(const char *hostname, int port)
 }
 SSL_CTX* InitCTX(void)
 {
-	SSL_METHOD *method;
+	const SSL_METHOD *method;
 	SSL_CTX *ctx;
 	OpenSSL_add_all_algorithms();  /* Load cryptos, et.al. */
 	SSL_load_error_strings();   /* Bring in and register error messages */
@@ -67,23 +72,43 @@ void ShowCerts(SSL* ssl)
 	else
 	    printf("Info: No client certificates configured.\n");
 }
-int main(int count, char *strings[])
+
+void recv_msg(SSL* ssl) {
+	while(true) {
+		char buf[BUFSIZE];
+		ssize_t received = SSL_read(ssl, buf, sizeof(buf));
+		if (received == 0 || received == -1) {
+			perror("recv failed");
+			exit(1);
+		}
+		buf[received] = '\0';
+		printf("%s\n", buf);
+	}
+}
+
+void usage() {
+	printf("syntax : ssl_client <host> <port>");
+	printf("sample : ssl_client 127.0.0.1 1234");
+}
+
+int main(int argc, char *argv[])
 {
+	if(argc != 3) {
+		usage();
+		exit(1);
+	}
+
 	SSL_CTX *ctx;
 	int server;
 	SSL *ssl;
-	char buf[1024];
-	char acClientRequest[1024] = {0};
+	char buf[BUFSIZE];
+	char acClientRequest[BUFSIZE] = {0};
 	int bytes;
 	char *hostname, *portnum;
-	if ( count != 3 )
-	{
-	    printf("usage: %s <hostname> <portnum>\n", strings[0]);
-	    exit(0);
-	}
+
 	SSL_library_init();
-	hostname=strings[1];
-	portnum=strings[2];
+	hostname=argv[1];
+	portnum=argv[2];
 	ctx = InitCTX();
 	server = OpenConnection(hostname, atoi(portnum));
 	ssl = SSL_new(ctx);      /* create new SSL connection state */
@@ -94,21 +119,33 @@ int main(int count, char *strings[])
 	{
 	    char acUsername[16] = {0};
 	    char acPassword[16] = {0};
-	    const char *cpRequestMessage = "<Body>\
-                                <UserName>%s<UserName>\
-                    <Password>%s<Password>\
-                    <\Body>";
+	    const char *cpRequestMessage = "<Body><UserName>%s<UserName><Password>%s<Password><Body>";
 	    printf("Enter the User Name : ");
 	    scanf("%s",acUsername);
-	    printf("\n\nEnter the Password : ");
+	    printf("Enter the Password : ");
 	    scanf("%s",acPassword);
 	    sprintf(acClientRequest, cpRequestMessage, acUsername,acPassword);   /* construct reply */
-	    printf("\n\nConnected with %s encryption\n", SSL_get_cipher(ssl));
+	    printf("\nConnected with %s encryption\n", SSL_get_cipher(ssl));
 	    ShowCerts(ssl);        /* get any certs */
 	    SSL_write(ssl,acClientRequest, strlen(acClientRequest));   /* encrypt & send message */
 	    bytes = SSL_read(ssl, buf, sizeof(buf)); /* get reply & decrypt */
 	    buf[bytes] = 0;
 	    printf("Received: \"%s\"\n", buf);
+
+		thread T(recv_msg, ssl);
+
+		while (true) {
+			char buf[BUFSIZE];
+			scanf("%s", buf);
+			if (strcmp(buf, "quit") == 0) break;
+			
+			ssize_t sent = SSL_write(ssl, buf, sizeof(buf));
+			if (sent <= 0) {
+				perror("send failed");
+				break;
+			}
+		}
+
 	    SSL_free(ssl);        /* release connection state */
 	}
 	close(server);         /* close socket */

@@ -7,9 +7,21 @@
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <resolv.h>
+#include <set>
+#include <thread>
+#include <vector>
+#include <string>
 #include "openssl/ssl.h"
 #include "openssl/err.h"
 #define FAIL    -1
+
+using namespace std;
+
+const static int BUFSIZE = 1024;
+
+set<SSL *> Clients;
+bool bflag;
+
 // Create the SSL socket and intialize the socket address structure
 int OpenListener(int port)
 {
@@ -32,6 +44,7 @@ int OpenListener(int port)
     }
     return sd;
 }
+
 int isRoot()
 {
     if (getuid() != 0)
@@ -43,13 +56,13 @@ int isRoot()
         return 1;
     }
 }
+
 SSL_CTX* InitServerCTX(void)
 {
-    SSL_METHOD *method;
     SSL_CTX *ctx;
     OpenSSL_add_all_algorithms();  /* load & register all cryptos, etc. */
     SSL_load_error_strings();   /* load all error messages */
-    method = TLSv1_2_server_method();  /* create new server-method instance */
+    const SSL_METHOD *method = TLSv1_2_server_method();  /* create new server-method instance */
     ctx = SSL_CTX_new(method);   /* create new context from method */
     if ( ctx == NULL )
     {
@@ -58,6 +71,7 @@ SSL_CTX* InitServerCTX(void)
     }
     return ctx;
 }
+
 void LoadCertificates(SSL_CTX* ctx, char* CertFile, char* KeyFile)
 {
     /* set the local certificate from CertFile */
@@ -79,6 +93,7 @@ void LoadCertificates(SSL_CTX* ctx, char* CertFile, char* KeyFile)
         abort();
     }
 }
+
 void ShowCerts(SSL* ssl)
 {
     X509 *cert;
@@ -98,20 +113,61 @@ void ShowCerts(SSL* ssl)
     else
         printf("No certificates.\n");
 }
-void Servlet(SSL* ssl) /* Serve the connection -- threadable */
+
+void echo(SSL* ssl) {
+    X509 *cert = SSL_get_peer_certificate(ssl); /* Get certificates (if available) */
+    int sd = SSL_get_fd(ssl);
+
+    if ( cert != NULL )
+    {
+		perror("ERROR on accept");
+		return;
+	}
+	printf("connected  [Client %d]\n", sd);
+
+	while (true) {
+		char buf[BUFSIZE];
+		int received = SSL_read(ssl, buf, sizeof(buf));
+		if (received == 0 || received == -1) {
+			printf("recv failed to %d\n", sd);
+			Clients.erase(ssl);
+            close(sd);          /* close connection */
+			break;
+		}
+
+		snprintf(buf+received, 14, "  [Client %d]\0", sd);
+		printf("%s\n", buf);
+		
+		if(bflag) {
+			for(auto it = Clients.begin(); it != Clients.end(); it++) {
+				ssize_t sent = SSL_write(*it, buf, strlen(buf));
+				if (sent == 0) {
+					printf("send failed to %d\n", sd);
+					Clients.erase(ssl);
+                    close(sd);          /* close connection */
+				}
+			}
+		}
+		else {
+			ssize_t sent = SSL_write(ssl, buf, strlen(buf));
+			if (sent == 0) {
+				printf("send failed to %d\n", sd);
+				Clients.erase(ssl);
+                close(sd);          /* close connection */
+				break;
+			}
+		}
+	}
+}
+
+bool Servlet(SSL* ssl) /* Serve the connection -- threadable */
 {
     char buf[1024] = {0};
     int sd, bytes;
-    const char* ServerResponse="<\Body>\
-                                <Name>aticleworld.com</Name>\
-                    <year>1.5</year>\
-                    <BlogType>Embedede and c\c++<\BlogType>\
-                    <Author>amlendra<Author>\
-                    <\Body>";
-    const char *cpValidMessage = "<Body>\
-                                <UserName>Taeho<UserName>\
-                    <Password>password<Password>\
-                    <\Body>";
+    bool ret = false;
+    const char* ServerResponse="<Body><Name>aticleworld.com</Name><year>1.5</year><BlogType>Embedede and c/c++</BlogType><Author>amlendra<Author></Body>";
+    const char *cpValidMessage = "<Body><UserName>a<UserName><Password>b<Password><Body>";
+
     if ( SSL_accept(ssl) == FAIL )     /* do SSL-protocol accept */
         ERR_print_errors_fp(stderr);
     else
@@ -125,6 +181,7 @@ void Servlet(SSL* ssl) /* Serve the connection -- threadable */
             if(strcmp(cpValidMessage,buf) == 0)
             {
                 SSL_write(ssl, ServerResponse, strlen(ServerResponse)); /* send reply */
+                ret = true;
             }
             else
             {
@@ -136,12 +193,21 @@ void Servlet(SSL* ssl) /* Serve the connection -- threadable */
             ERR_print_errors_fp(stderr);
         }
     }
-    sd = SSL_get_fd(ssl);       /* get socket connection */
-    SSL_free(ssl);         /* release SSL state */
-    close(sd);          /* close connection */
+    return ret;
 }
-int main(int count, char *Argc[])
+
+void usage() {
+	printf("syntax : ssl_server <port> [-b]\n");
+	printf("sample : ssl_server 1234 -b\n");
+}
+
+int main(int argc, char *argv[])
 {
+    if(!(argc == 3 && argv[2][0] == '-' && argv[2][1] == 'b') && argc != 2) {
+		usage();
+		exit(1);
+	}
+
     SSL_CTX *ctx;
     int server;
     char *portnum;
@@ -151,17 +217,17 @@ int main(int count, char *Argc[])
         printf("This program must be run as root/sudo user!!");
         exit(0);
     }
-    if ( count != 2 )
-    {
-        printf("Usage: %s <portnum>\n", Argc[0]);
-        exit(0);
-    }
+
     // Initialize the SSL library
     SSL_library_init();
-    portnum = Argc[1];
+    portnum = argv[1];
     ctx = InitServerCTX();        /* initialize SSL */
-    LoadCertificates(ctx, "new.cert.cert", "new.cert.key"); /* load certs */
+    char cert[20] = "new.cert.cert", key[20] = "new.cert.key";
+    LoadCertificates(ctx, cert, key); /* load certs */
     server = OpenListener(atoi(portnum));    /* create server socket */
+
+    vector<thread> T;
+
     while (1)
     {
         struct sockaddr_in addr;
@@ -171,8 +237,15 @@ int main(int count, char *Argc[])
         printf("Connection: %s:%d\n",inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
         ssl = SSL_new(ctx);              /* get new SSL state with context */
         SSL_set_fd(ssl, client);      /* set connection socket to SSL state */
-        Servlet(ssl);         /* service connection */
+        bool certificate = Servlet(ssl);         /* service connection */
+
+        if(certificate) {
+            Clients.insert(ssl);
+            // echo(ssl, client);
+            T.push_back(thread(echo, ssl));
+        }
     }
+
     close(server);          /* close server socket */
     SSL_CTX_free(ctx);         /* release context */
 }
